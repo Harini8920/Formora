@@ -1,3 +1,227 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { createClient } from '@supabase/supabase-js';
+import { AnimatePresence, motion } from 'framer-motion';
+import {
+  Activity, ArrowDown, ArrowLeft, ArrowRight, BarChart3, Bell, BookOpen, Check,
+  CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Clipboard,
+  Clock3, Copy, Download, Eye, FileText, Filter, Folder, Globe2, GripVertical,
+  Home, Image, LayoutGrid, Link2, ListChecks, LogOut, Menu, Moon, MoreHorizontal,
+  Plus, Search, Settings, Share2, ShieldCheck, Sparkles, Sun, Trash2, Type,
+  UploadCloud, Users, WandSparkles, X, CircleDot, CalendarDays, Star, Hash,
+  Mail, AlignLeft, ChevronUp, Save, LockKeyhole
+} from 'lucide-react';
+import './style.css';
+
+const envUrl = import.meta.env.VITE_SUPABASE_URL;
+const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = envUrl && envKey ? createClient(envUrl, envKey) : null;
+const uid = () => Math.random().toString(36).slice(2, 10);
+const starterQuestions = () => [
+  { id: uid(), type: 'short', title: 'What should we call you?', required: true, description: '' },
+  { id: uid(), type: 'email', title: 'Your email address', required: true, description: '' },
+  { id: uid(), type: 'choice', title: 'What are you most interested in?', required: true, options: ['Design & creativity', 'Technology', 'Business', 'Something else'] }
+];
+const templates = [
+  { name: 'Event registration', category: 'Events', icon: CalendarDays, color: 'violet', description: 'Collect attendee details and preferences.' },
+  { name: 'Customer feedback', category: 'Feedback', icon: Star, color: 'amber', description: 'Learn what your customers really think.' },
+  { name: 'Contact form', category: 'General', icon: Mail, color: 'blue', description: 'Make it easy for people to reach you.' },
+  { name: 'Course evaluation', category: 'Education', icon: BookOpen, color: 'green', description: 'Gather useful feedback after a session.' }
+];
+const blankForm = (title = 'Untitled form') => ({ id: uid(), title, description: 'Add a short description to help people understand this form.', questions: [], created_at: new Date().toISOString(), responses: 0, published: false, theme: 'violet' });
+const questionTypes = [
+  { type: 'short', label: 'Short answer', icon: Type },
+  { type: 'paragraph', label: 'Paragraph', icon: AlignLeft },
+  { type: 'choice', label: 'Multiple choice', icon: CircleDot },
+  { type: 'checkbox', label: 'Checkboxes', icon: ListChecks },
+  { type: 'dropdown', label: 'Dropdown', icon: ChevronDown },
+  { type: 'rating', label: 'Rating scale', icon: Star },
+  { type: 'date', label: 'Date', icon: CalendarDays },
+  { type: 'number', label: 'Number', icon: Hash },
+  { type: 'email', label: 'Email', icon: Mail }
+];
+
+function App() {
+  const [theme, setTheme] = useState(localStorage.getItem('formora-theme') || 'dark');
+  const [user, setUser] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authMode, setAuthMode] = useState('signin');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authMessage, setAuthMessage] = useState('');
+  const [forms, setForms] = useState([]);
+  const [responses, setResponses] = useState({});
+  const [view, setView] = useState('home');
+  const [activeForm, setActiveForm] = useState(null);
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState('All forms');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [toast, setToast] = useState('');
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [preview, setPreview] = useState(false);
+  const [publicForm, setPublicForm] = useState(null);
+  const [publicAnswers, setPublicAnswers] = useState({});
+  const [publicSubmitted, setPublicSubmitted] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [selectedResponses, setSelectedResponses] = useState('all');
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('formora-theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const publicId = params.get('form');
+    if (publicId) loadPublicForm(publicId);
+    if (!supabase) { setAuthReady(true); loadLocalForms(); return; }
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user || null);
+      setAuthReady(true);
+      if (data.session?.user) loadCloudForms(data.session.user.id);
+      else loadLocalForms();
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user || null);
+      if (session?.user) loadCloudForms(session.user.id);
+      else loadLocalForms();
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  const notify = (message) => { setToast(message); window.setTimeout(() => setToast(''), 2600); };
+  const loadLocalForms = () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('formora-forms') || '[]');
+      setForms(stored);
+      setResponses(JSON.parse(localStorage.getItem('formora-responses') || '{}'));
+    } catch { setForms([]); }
+  };
+  const saveLocal = (nextForms, nextResponses = responses) => {
+    localStorage.setItem('formora-forms', JSON.stringify(nextForms));
+    localStorage.setItem('formora-responses', JSON.stringify(nextResponses));
+  };
+  async function loadCloudForms(userId) {
+    const { data, error } = await supabase.from('forms').select('*').eq('owner_id', userId).order('updated_at', { ascending: false });
+    if (error) { notify('Could not load cloud forms. Check Supabase setup.'); loadLocalForms(); return; }
+    const mapped = (data || []).map(row => ({ ...row.content, id: row.id, title: row.title, published: row.published, created_at: row.created_at }));
+    setForms(mapped);
+    const ids = mapped.map(f => f.id);
+    if (ids.length) {
+      const { data: rs } = await supabase.from('responses').select('*').in('form_id', ids).order('created_at', { ascending: false });
+      const grouped = {};
+      (rs || []).forEach(r => { (grouped[r.form_id] ||= []).push({ id: r.id, answers: r.answers, created_at: r.created_at }); });
+      setResponses(grouped);
+    } else setResponses({});
+  }
+  async function persistForm(form, nextForms) {
+    setForms(nextForms);
+    if (!supabase || !user) { saveLocal(nextForms); return; }
+    setSaving(true);
+    const row = { id: form.id, owner_id: user.id, title: form.title, description: form.description || '', published: !!form.published, content: form, updated_at: new Date().toISOString() };
+    const { error } = await supabase.from('forms').upsert(row);
+    setSaving(false);
+    if (error) notify('Save failed: check the Supabase SQL setup.');
+  }
+  const updateActive = (patch) => {
+    const updated = { ...activeForm, ...patch };
+    setActiveForm(updated);
+    persistForm(updated, forms.map(f => f.id === updated.id ? updated : f));
+  };
+  const createForm = (template = null) => {
+    let form = blankForm(template ? template.name : 'Untitled form');
+    if (template) {
+      form.description = template.description;
+      form.questions = template.category === 'Events' ? [
+        { id: uid(), type: 'short', title: 'Full name', required: true },
+        { id: uid(), type: 'email', title: 'Email address', required: true },
+        { id: uid(), type: 'choice', title: 'Which session will you attend?', required: true, options: ['Morning', 'Afternoon', 'Evening'] }
+      ] : template.category === 'Feedback' ? [
+        { id: uid(), type: 'rating', title: 'How was your experience?', required: true },
+        { id: uid(), type: 'paragraph', title: 'What could we improve?', required: false }
+      ] : starterQuestions();
+    }
+    const next = [form, ...forms];
+    setActiveForm(form); setForms(next); persistForm(form, next); setView('editor'); setShowTemplates(false); setPreview(false);
+  };
+  const openForm = (form) => { setActiveForm(JSON.parse(JSON.stringify(form))); setView('editor'); setPreview(false); };
+  const deleteForm = async (id) => {
+    const next = forms.filter(f => f.id !== id);
+    setForms(next); saveLocal(next);
+    if (supabase && user) await supabase.from('forms').delete().eq('id', id);
+    setView('home'); setActiveForm(null); notify('Form moved to trash');
+  };
+  const duplicateForm = (form) => {
+    const copy = { ...JSON.parse(JSON.stringify(form)), id: uid(), title: `${form.title} (copy)`, created_at: new Date().toISOString(), published: false };
+    const next = [copy, ...forms]; setForms(next); persistForm(copy, next); notify('Form duplicated');
+  };
+  const addQuestion = (type = 'short') => {
+    if (!activeForm) return;
+    const q = { id: uid(), type, title: type === 'email' ? 'Email address' : 'Untitled question', description: '', required: false };
+    if (['choice', 'checkbox', 'dropdown'].includes(type)) q.options = ['Option 1', 'Option 2', 'Option 3'];
+    updateActive({ questions: [...(activeForm.questions || []), q] });
+  };
+  const updateQuestion = (id, patch) => updateActive({ questions: activeForm.questions.map(q => q.id === id ? { ...q, ...patch } : q) });
+  const removeQuestion = (id) => updateActive({ questions: activeForm.questions.filter(q => q.id !== id) });
+  const moveQuestion = (id, direction) => {
+    const qs = [...activeForm.questions], i = qs.findIndex(q => q.id === id), j = i + direction;
+    if (j < 0 || j >= qs.length) return;
+    [qs[i], qs[j]] = [qs[j], qs[i]]; updateActive({ questions: qs });
+  };
+  const publishForm = () => {
+    const updated = { ...activeForm, published: !activeForm.published };
+    updateActive(updated); notify(updated.published ? 'Your form is live!' : 'Form unpublished');
+  };
+  const shareForm = async () => {
+    const url = `${location.origin}${location.pathname}?form=${activeForm.id}`;
+    try { await navigator.clipboard.writeText(url); notify('Share link copied'); }
+    catch { window.prompt('Copy your form link:', url); }
+  };
+  const submitPublic = async (event) => {
+    event.preventDefault();
+    const missing = publicForm.questions.find(q => q.required && (publicAnswers[q.id] === undefined || publicAnswers[q.id] === '' || (Array.isArray(publicAnswers[q.id]) && !publicAnswers[q.id].length)));
+    if (missing) { notify(`Please answer: ${missing.title}`); return; }
+    const submission = { id: uid(), answers: publicAnswers, created_at: new Date().toISOString() };
+    if (supabase) {
+      const { error } = await supabase.from('responses').insert({ form_id: publicForm.id, answers: publicAnswers });
+      if (error) { notify('Submission could not be saved. Check form policies.'); return; }
+    } else {
+      const stored = JSON.parse(localStorage.getItem('formora-responses') || '{}');
+      stored[publicForm.id] = [...(stored[publicForm.id] || []), submission];
+      localStorage.setItem('formora-responses', JSON.stringify(stored));
+    }
+    setPublicSubmitted(true);
+  };
+  async function loadPublicForm(id) {
+    if (supabase) {
+      const { data } = await supabase.from('forms').select('id,title,description,content,published').eq('id', id).eq('published', true).maybeSingle();
+      if (data) { setPublicForm({ ...data.content, id: data.id, title: data.title, description: data.description, published: true }); return; }
+    }
+    const local = JSON.parse(localStorage.getItem('formora-forms') || '[]').find(f => f.id === id && f.published);
+    if (local) setPublicForm(local);
+  }
+  const signIn = async (event) => {
+    event.preventDefault(); setAuthMessage('');
+    if (!supabase) { setAuthMessage('Connect Supabase using your .env file to enable accounts. Local demo mode is active.'); return; }
+    const result = authMode === 'signup'
+      ? await supabase.auth.signUp({ email: authEmail, password: authPassword })
+      : await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
+    if (result.error) setAuthMessage(result.error.message);
+    else if (authMode === 'signup') setAuthMessage('Check your email to confirm your account, then sign in.');
+    else { setUser(result.data.user); setView('home'); }
+  };
+  const signOut = async () => { if (supabase) await supabase.auth.signOut(); setUser(null); loadLocalForms(); notify('Signed out'); };
+  const exportCSV = (form) => {
+    const list = responses[form.id] || [];
+    const qs = form.questions || [];
+    const csvCell = v => `"${String(v ?? '').replaceAll('"', '""')}"`;
+    const rows = [['Submitted at', ...qs.map(q => q.title)], ...list.map(r => [r.created_at, ...qs.map(q => Array.isArray(r.answers?.[q.id]) ? r.answers[q.id].join('; ') : r.answers?.[q.id] ?? '')])];
+    const csv = rows.map(row => row.map(csvCell).join(',')).join('\r\n');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' })); a.download = `${form.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-responses.csv`; a.click(); URL.revokeObjectURL(a.href);
+  };
+  const filteredForms = useMemo(() => forms.filter(f => f.title.toLowerCase().includes(search.toLowerCase()) && (filter === 'All forms' || (filter === 'Published' ? f.published : !f.published))), [forms, search, filter]);
+  const totalResponses = Object.values(responses).reduce((sum, list) => sum + (list?.length || 0), 0);
   const pageTitle = view === 'home' ? 'Your workspace' : view === 'editor' ? (preview ? 'Preview form' : 'Form studio') : view === 'responses' ? 'Responses' : view === 'analytics' ? 'Analytics' : 'Settings';
 
   if (new URLSearchParams(location.search).has('form')) return <PublicForm form={publicForm} answers={publicAnswers} setAnswers={setPublicAnswers} submitted={publicSubmitted} onSubmit={submitPublic} theme={theme} toggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} />;
